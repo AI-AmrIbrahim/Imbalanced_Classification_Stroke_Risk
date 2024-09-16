@@ -1,0 +1,744 @@
+---
+title: "AMS 560 Final Project"
+author: "Matthew Hureau, Amr Ibrahim"
+date: '2022-04-29'
+output: word_document
+---
+
+# Relevelant Packages
+```{r}
+library(tidyverse)
+library(ROSE)
+library(caret)
+library(neuralnet)
+library(MASS)
+library(glmnet)
+library(randomForest)
+library(ggplot2)
+```
+
+# Data Cleaning and Manipulation 
+
+```{r}
+data = read.csv('C:/Users/mthth/Downloads/School/SPRING 2022/Notebooks/Final Project/healthcare-dataset-stroke-data.csv', header = TRUE, na.strings ='N/A')
+#View(data)
+str(data)
+
+table(data$gender)
+# only one non-binary observation, best to remove it instead of having three different levels/
+# not enough non-binary observations to accurately draw a conclusion anyway 
+
+sapply(data, function(x) sum(is.na(x)))
+# only "bmi" has any missing values, and there are 201 of them
+
+# Let's see how many observations we'd have left if we just decided to remove them
+data.rm.missing = na.omit(data)
+cat("If we remove missing values directly, there are", nrow(data.rm.missing), "samples left,
+after we removed", abs(nrow(data)-nrow(data.rm.missing)), "observations")
+
+201/nrow(data)
+# Around 4% of the observations would be removed if we deleted ones with missing values 
+
+hist(data$bmi)
+shapiro.test(data$bmi)
+quantile(data$bmi, na.rm = TRUE)
+# bmi doesn't seem to be normally distirbuted, so it would be smart to impute the mean.
+# possibly the median?
+
+data$bmi = replace_na(data$bmi, 28.1)
+
+sapply(data, function(x) sum(is.na(x)))
+# missing values are taken care of 
+
+# We want to drop the one observation where gender is non-binary
+data[data$gender == 'Other',]
+
+data = data[c(1:3116, 3118:nrow(data)),]
+table(data$gender)
+# Now it's just female and males 
+
+# We decided to drop the IdGroup variable 
+data = subset(data, select = -id)
+str(data)
+```
+
+#------------------------------------------------------------------------------------------------------------------------------------
+## DATA VISUALIZATION
+```{r}
+ggplot(data, aes(x= gender,  group=stroke)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+  geom_text(aes( label = scales::percent(..prop..),
+                 y= ..prop.. ), stat= "count", vjust = -.5) +
+  labs(y = "Percent", fill="gender") +
+  facet_grid(~stroke) +
+  scale_y_continuous(labels = scales::percent)
+
+ggplot(data, aes(x= hypertension,  group=stroke)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+  geom_text(aes( label = scales::percent(..prop..),
+                 y= ..prop.. ), stat= "count", vjust = -.5) +
+  labs(y = "Percent", fill="hypertension") +
+  facet_grid(~stroke) +
+  scale_y_continuous(labels = scales::percent)
+
+ggplot(data, aes(x= heart_disease,  group=stroke)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+  geom_text(aes( label = scales::percent(..prop..),
+                 y= ..prop.. ), stat= "count", vjust = -.5) +
+  labs(y = "Percent", fill="heart_disease") +
+  facet_grid(~stroke) +
+  scale_y_continuous(labels = scales::percent)
+
+ggplot(data, aes(x= ever_married,  group=stroke)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+  geom_text(aes( label = scales::percent(..prop..),
+                 y= ..prop.. ), stat= "count", vjust = -.5) +
+  labs(y = "Percent", fill="ever_married") +
+  facet_grid(~stroke) +
+  scale_y_continuous(labels = scales::percent)
+
+ggplot(data, aes(x= work_type,  group=stroke)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+  geom_text(aes( label = scales::percent(..prop..),
+                 y= ..prop.. ), stat= "count", vjust = -.5) +
+  labs(y = "Percent", fill="work_type") +
+  facet_grid(~stroke) +
+  scale_y_continuous(labels = scales::percent)
+
+ggplot(data, aes(x= Residence_type,  group=stroke)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+  geom_text(aes( label = scales::percent(..prop..),
+                 y= ..prop.. ), stat= "count", vjust = -.5) +
+  labs(y = "Percent", fill="residence_type") +
+  facet_grid(~stroke) +
+  scale_y_continuous(labels = scales::percent)
+
+ggplot(data, aes(x= smoking_status,  group=stroke)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+  geom_text(aes( label = scales::percent(..prop..),
+                 y= ..prop.. ), stat= "count", vjust = -.5) +
+  labs(y = "Percent", fill="smoking_status") +
+  facet_grid(~stroke) +
+  scale_y_continuous(labels = scales::percent)
+```
+
+#------------------------------------------------------------------------------------------------------------------------------------
+## MACHINE LEARNING / MODEL BUILDING 
+
+# Splitting the Data into Training and Testing
+```{r}
+set.seed(123)
+random.samples = createDataPartition(data$stroke, p = 0.75, list = FALSE)
+train.data = data[random.samples, ]
+testing.data = data[-random.samples, ]
+```
+
+#------------------------------------------------------------------------------------------------------------------------------------
+## UNDERSAMPLING
+
+# Getting Undersampled Training Set 
+```{r}
+set.seed(123)
+training.data = ovun.sample(stroke ~ ., data = train.data, method = "under", N = 364)$data
+table(training.data$stroke)
+```
+
+## Neural Network (not great for undersampling since neural network needs a lot of data)
+```{r}
+train.nn = data.frame(stroke = training.data$stroke, model.matrix(stroke ~ . -1, training.data))
+test.nn = data.frame(stroke = testing.data$stroke, model.matrix(stroke ~ . -1, testing.data))
+
+str(train.nn)
+
+set.seed(123)
+model.nn = neuralnet(stroke ~ ., data = train.nn, hidden = 0, err.fct = "ce", linear.output = F)
+# plot(model.nn, rep = "best")
+
+probabilities = as.vector(predict(model.nn, test.nn))
+predicted.classes = ifelse(probabilities > 0.5, 1, 0)
+confusionMatrix(factor(predicted.classes), factor(test.nn$stroke), positive = '1')
+```
+
+## Support Vector Machine
+```{r}
+# Linear Kernel
+
+test.svm = testing.data
+test.svm$stroke = as.factor(test.svm$stroke)
+
+set.seed(123)
+model.svm = train(
+  as.factor(stroke) ~., data = training.data, method = "svmLinear",
+  trControl = trainControl("cv", number = 10),
+  #tuneGrid = expand.grid(C = seq(0.1, 2, length = 19)), #(linear)
+  tuneLength = 10, #(radial basis)
+  #tuneLength = 4 #(polynomial)
+  )
+
+plot(model.svm)
+model.svm$bestTune
+
+predictions.svm = predict(model.svm, test.svm)
+confusionMatrix(factor(predictions.svm), factor(test.svm$stroke), positive = '1')
+```
+
+## Logistic Regression
+```{r}
+logistic = glm(stroke ~ ., data = training.data, family = 'binomial')
+nothing = glm(stroke ~ 1, data = training.data, family = 'binomial')
+summary(logistic)
+probs = predict(logistic, testing.data, type = 'response')
+
+# to get the results, just apply the model you want, execute the probs for that model, and then scroll to the bottom of the cell and 
+# apply the confusion matrix 
+
+# Stepwise Selection
+stepwise = stepAIC(logistic, trace = FALSE)
+#summary(stepwise)
+formula(stepwise)
+probs = predict(stepwise, testing.data, type = 'response')
+
+# Backward Selection
+backwards = step(logistic, trace=0)
+#coef(backwards)
+#summary(backwards)
+probs = predict(backwards, testing.data, type = 'response')
+
+# Forward Selection
+forwards = step(nothing, scope=list(lower =formula(nothing),upper=formula(logistic)), direction="forward", trace = 0)
+#summary(forwards)
+probs = predict(forwards, testing.data, type = 'response')
+
+predictions = ifelse(probs > 0.5, 1, 0)
+confusionMatrix(factor(predictions), factor(testing.data$stroke), positive = '1')
+```
+
+## Lasso Regression
+```{r}
+x.train = model.matrix(stroke ~ ., training.data)[,-1]
+x.test = model.matrix(stroke ~., testing.data)[,-1]
+
+# what's the optimal lambda for the data?
+set.seed(123)
+cv = cv.glmnet(x.train, as.numeric(training.data$stroke), alpha = 1)
+
+lasso = glmnet(x.train, training.data$stroke, family = "binomial", alpha = 1, lambda = cv$lambda.min)
+#coef(lasso)
+
+probs.lasso = as.vector(predict(lasso, x.test, type = 'response'))
+predictions.lasso = ifelse(probs.lasso > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.lasso), as.factor(testing.data$stroke), positive = '1')
+```
+
+## Ridge Regression
+```{r}
+set.seed(123)
+cv = cv.glmnet(x.train, as.numeric(training.data$stroke), alpha = 0)
+
+ridge = glmnet(x.train, training.data$stroke, family = "binomial", alpha = 0, lambda = cv$lambda.min)
+coef(ridge)
+
+probs.ridge = as.vector(predict(ridge, x.test, type = 'response'))
+predictions.ridge = ifelse(probs.ridge > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.ridge), as.factor(testing.data$stroke), positive = '1')
+```
+
+## Elastic Net
+```{r}
+set.seed(123)
+model = train(
+  as.factor(stroke) ~., data = training.data, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 10
+)
+
+model$bestTune
+
+#x.test = model.matrix(stroke ~., testing.data.over)[,-1]
+predictions = predict(model, testing.data)
+
+confusionMatrix(predictions, as.factor(testing.data$stroke), positive = '1')
+```
+
+
+#------------------------------------------------------------------------------------------------------------------------------------
+## OVERSAMPLING
+
+## Getting Oversampled Training Set
+```{r}
+train.data.over = train.data
+testing.data.over = testing.data
+
+set.seed(123)
+training.data.over = ovun.sample(stroke ~ ., data = train.data, method = "over", N = 7300)$data
+table(training.data.over$stroke)
+```
+
+## Neural Network
+```{r}
+mat.over = model.matrix(stroke ~ . - 1, training.data.over)
+data.over = data.frame(stroke = training.data.over$stroke, mat.over)
+
+model.over = neuralnet(stroke ~ ., data = data.over, hidden = 1, err.fct = "ce", linear.output = F)
+plot(model, rep = "best")
+
+test.nn.over = model.matrix(stroke ~ . - 1, testing.data.over)
+test.nn.over2 = data.frame(stroke = testing.data.over$stroke, test.nn.over)
+  
+probabilities = as.vector(predict(model.over, test.nn.over2))
+predicted.classes = ifelse(probabilities > 0.5, 1, 0)
+confusionMatrix(factor(predicted.classes), factor(test.nn.over2$stroke), positive = '1')
+
+```
+
+## Support Vector Machine
+```{r}
+set.seed(123)
+model.svm = train(
+  as.factor(stroke) ~., data = training.data.over, method = "svmLinear",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(C = seq(0.1, 2, length = 10))
+  )
+
+plot(model)
+model$bestTune
+
+predictions.svm = predict(model.svm, testing.data.over)
+confusionMatrix(factor(predictions.svm), factor(testing.data.over$stroke), positive = '1')
+```
+
+## Logistic Regression
+```{r}
+# Don't need to code the numerical categorical variables as factors except the outcome
+
+training.data.over.logistic = training.data.over
+training.data.over.logistic$stroke = as.factor(training.data.over.logistic$stroke)
+
+testing.data.over.logistic = testing.data
+testing.data.over.logistic$stroke = as.factor(testing.data$stroke)
+
+logistic = glm(stroke ~ ., data = training.data.over.logistic, family = 'binomial')
+
+probs = predict(logistic, testing.data.over.logistic)
+predictions = ifelse(probs > 0.5, 1, 0)
+confusionMatrix(factor(predictions), factor(testing.data.over.logistic$stroke), positive = '1')
+```
+
+## Variable Selection Algorithms for Logistic Regression
+```{r}
+# Stepwise Selection
+library(MASS)
+nothing = glm(stroke ~ 1, data = training.data.over, family = 'binomial')
+stepwise = stepAIC(logistic, trace = FALSE)
+summary(stepwise)
+probs = predict(stepwise, testing.data.over.logistic, type = 'response')
+
+# Backward Selection
+backwards = step(logistic, trace=0)
+summary(backwards)
+probs = predict(backwards, testing.data.over.logistic, type = 'response')
+
+# Forward Selection
+forwards = step(nothing, scope=list(lower =formula(nothing),upper=formula(logistic)), direction="forward", trace = 0)
+summary(forwards)
+probs = predict(forwards, testing.data.over.logistic, type = 'response')
+
+predictions = ifelse(probs > 0.5, 1, 0)
+confusionMatrix(factor(predictions), factor(testing.data.over.logistic$stroke), positive = '1')
+```
+
+## Lasso Regression
+```{r}
+x.train = model.matrix(stroke ~ ., training.data.over)[,-1]
+x.test = model.matrix(stroke ~., testing.data.over)[,-1]
+
+# what's the optimal lambda for the data?
+set.seed(123)
+cv = cv.glmnet(x.train, as.numeric(training.data.over$stroke), alpha = 1)
+
+lasso = glmnet(x.train, training.data.over$stroke, family = "binomial", alpha = 1, lambda = cv$lambda.min)
+coef(lasso)
+
+probs.lasso = as.vector(predict(lasso, x.test, type = 'response'))
+predictions.lasso = ifelse(probs.lasso > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.lasso), as.factor(testing.data.over$stroke), positive = '1')
+```
+
+## Ridge Regression
+```{r}
+set.seed(123)
+cv = cv.glmnet(x.train, as.numeric(training.data.over$stroke), alpha = 0)
+
+ridge = glmnet(x.train, training.data.over$stroke, family = "binomial", alpha = 0, lambda = cv$lambda.min)
+coef(ridge)
+
+probs.ridge = as.vector(predict(ridge, x.test, type = 'response'))
+predictions.ridge = ifelse(probs.ridge > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.ridge), as.factor(testing.data.over$stroke), positive = '1')
+```
+
+## Elastic Net
+```{r}
+set.seed(123)
+model = train(
+  as.factor(stroke) ~., data = training.data.over, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 10
+)
+
+model$bestTune
+
+#x.test = model.matrix(stroke ~., testing.data.over)[,-1]
+predictions = predict(model, testing.data.over)
+
+confusionMatrix(predictions, as.factor(testing.data.over$stroke), positive = '1')
+```
+
+## Random Forest
+```{r}
+train.data.over.forest = training.data.over
+train.data.over.forest$stroke = as.factor(train.data.over.forest$stroke)
+
+set.seed(123)
+model = train(
+  stroke ~., data = train.data.over.forest, method = "rf",
+  trControl = trainControl("cv", number = 10),
+  importance = TRUE
+)
+
+# Best tuning parameter
+model$bestTune
+model$finalModel
+
+# Predictions and confusion matrix
+predictions = predict(model, testing.data.over)
+confusionMatrix(as.factor(predictions), as.factor(testing.data.over$stroke), positive = '1')
+
+# variable importance plots
+varImpPlot(model$finalModel, type = 1)
+varImpPlot(model$finalModel, type = 2)
+```
+
+# K-Nearest Neighbors
+```{r}
+knn.train = training.data.over
+knn.test = testing.data.over
+set.seed(123)
+model = train(as.factor(stroke) ~ .,method = "knn", tuneGrid = expand.grid(k = 1:20),
+        trControl  = trainControl('cv', number = 10), metric = "Accuracy", 
+        data = training.data.over)
+
+predictions.knn = predict(model, knn.test)
+confusionMatrix(predictions.knn, as.factor(knn.test$stroke), positive = '1')
+```
+
+#------------------------------------------------------------------------------------------------------------------------------------
+## OVER/UNDER SAMPLING
+
+# Getting Over and Undersampled Training Set
+```{r}
+both.train = train.data
+both.test = testing.data
+
+table(train.data$stroke)
+both.training = ovun.sample(stroke ~ ., data = both.train, method = "both", p=0.5,N=3832, seed = 1)$data
+```
+
+# Logistic Regression
+```{r}
+logistic.both = glm(as.factor(stroke) ~ ., data = both.training, family = 'binomial')
+
+probs = predict(logistic.both, both.test)
+preds.logistic = ifelse(probs > 0.5, 1, 0)
+confusionMatrix(as.factor(preds.logistic), as.factor(both.test$stroke), positive = '1')
+```
+
+## Variable Selection Algorithms for Logistic Regression
+```{r}
+# Stepwise Selection
+library(MASS)
+nothing = glm(stroke ~ 1, data = both.training, family = 'binomial')
+stepwise = stepAIC(logistic.both, trace = FALSE)
+summary(stepwise)
+probs = predict(stepwise, both.test, type = 'response')
+
+# Backward Selection
+backwards = step(logistic.both, trace=0)
+summary(backwards)
+probs = predict(backwards, both.test, type = 'response')
+
+# Forward Selection
+forwards = step(nothing, scope=list(lower =formula(nothing),upper=formula(logistic.both)), direction="forward", trace = 0)
+summary(forwards)
+probs = predict(forwards, both.test, type = 'response')
+
+predictions = ifelse(probs > 0.5, 1, 0)
+confusionMatrix(factor(predictions), factor(both.test$stroke), positive = '1')
+```
+
+## Lasso Regression
+```{r}
+x.train = model.matrix(stroke ~ ., both.training)[,-1]
+x.test = model.matrix(stroke ~., both.test)[,-1]
+
+# what's the optimal lambda for the data?
+set.seed(123)
+cv = cv.glmnet(x.train, as.numeric(both.training$stroke), alpha = 1)
+
+lasso = glmnet(x.train, both.training$stroke, family = "binomial", alpha = 1, lambda = cv$lambda.min)
+coef(lasso)
+
+probs.lasso = as.vector(predict(lasso, x.test, type = 'response'))
+predictions.lasso = ifelse(probs.lasso > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.lasso), as.factor(both.test$stroke), positive = '1')
+```
+
+## Ridge Regression
+```{r}
+set.seed(123)
+cv = cv.glmnet(x.train, both.training$stroke, alpha = 0)
+
+ridge = glmnet(x.train, both.training$stroke, family = "binomial", alpha = 0, lambda = cv$lambda.min)
+coef(ridge)
+
+probs.ridge = as.vector(predict(ridge, x.test, type = 'response'))
+predictions.ridge = ifelse(probs.ridge > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.ridge), as.factor(both.test$stroke), positive = '1')
+```
+
+## Elastic Net
+```{r}
+set.seed(123)
+model = train(
+  as.factor(stroke) ~., data = both.training, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 10
+)
+
+model$bestTune
+
+#x.test = model.matrix(stroke ~., both.test)[,-1]
+predictions = predict(model, both.test)
+confusionMatrix(predictions, as.factor(both.test$stroke), positive = '1')
+```
+
+## Neural Network
+```{r}
+# library(neuralnet)
+# mat.under = model.matrix(stroke ~ . - 1, data.under)
+#data.under.nn = data.frame(stroke = data.under$stroke, mat)
+
+train.nn = data.frame(stroke = both.training$stroke, model.matrix(stroke ~ . -1, both.training))
+test.nn = data.frame(stroke = both.test$stroke, model.matrix(stroke ~ . -1, both.test))
+
+set.seed(123)
+model.nn = neuralnet(stroke ~ ., data = train.nn, hidden = 0, err.fct = "ce", linear.output = F)
+# plot(model.nn, rep = "best")
+
+probabilities = as.vector(predict(model.nn, test.nn))
+predicted.classes = ifelse(probabilities > 0.5, 1, 0)
+confusionMatrix(factor(predicted.classes), factor(test.nn$stroke), positive = '1')
+```
+
+## Random Forest
+```{r}
+library(randomForest)
+
+set.seed(123)
+model.rf = train(
+  as.factor(stroke) ~., data = both.training, method = "rf",
+  trControl = trainControl("cv", number = 10),
+  importance = TRUE
+)
+
+# Best tuning parameter
+model.rf$bestTune
+model.rf$finalModel
+
+predictions.rf = predict(model.rf, both.test)
+confusionMatrix(as.factor(predictions.rf), as.factor(both.test$stroke), positive = '1')
+
+varImpPlot(model.rf$finalModel, type = 1)
+varImpPlot(model.rf$finalModel, type = 2)
+```
+
+## Support Vector Machine
+```{r}
+# Linear Kernel
+
+test.svm = both.test
+test.svm$stroke = as.factor(test.svm$stroke)
+
+set.seed(123)
+model.svm = train(
+  as.factor(stroke) ~., data = both.training, method = "svmPoly",
+  trControl = trainControl("cv", number = 10),
+  #tuneGrid = expand.grid(C = seq(0.1, 2, length = 19)) (linear)
+  #tuneLength = 10 (radial)
+  tuneLength = 4 
+  )
+
+plot(model.svm)
+model.svm$bestTune
+
+predictions.svm = predict(model.svm, test.svm)
+confusionMatrix(factor(predictions.svm), factor(test.svm$stroke), positive = '1')
+```
+
+# K-Nearest Neighbors
+```{r}
+set.seed(123)
+model.knn = train(as.factor(stroke) ~ .,method = "knn", tuneGrid = expand.grid(k = 1:20),
+        trControl  = trainControl('cv', number = 10), metric = "Accuracy", 
+        data = both.training)
+
+predictions.knn = predict(model.knn, both.test)
+confusionMatrix(predictions.knn, as.factor(both.test$stroke), positive = '1')
+```
+
+#------------------------------------------------------------------------------------------------------------------------------------
+## ROSE Synthetic Data Generation
+
+# Getting the ROSE Synthetic Data Training and Testing Sets
+
+```{r}
+rose.training.data = train.data
+rose.testing.data = testing.data
+
+str(rose.training.data)
+rose.training.data$gender = as.factor(rose.training.data$gender)
+rose.training.data$work_type = as.factor(rose.training.data$work_type)
+rose.training.data$ever_married = as.factor(rose.training.data$ever_married)
+rose.training.data$Residence_type = as.factor(rose.training.data$Residence_type)
+rose.training.data$smoking_status = as.factor(rose.training.data$smoking_status)
+rose.training.data$stroke = as.factor(rose.training.data$stroke)
+rose.training.data$hypertension = as.factor(rose.training.data$hypertension)
+rose.training.data$heart_disease = as.factor(rose.training.data$heart_disease)
+str(rose.training.data)
+
+rose.testing.data$gender = as.factor(rose.testing.data$gender)
+rose.testing.data$work_type = as.factor(rose.testing.data$work_type)
+rose.testing.data$ever_married = as.factor(rose.testing.data$ever_married)
+rose.testing.data$Residence_type = as.factor(rose.testing.data$Residence_type)
+rose.testing.data$smoking_status = as.factor(rose.testing.data$smoking_status)
+rose.testing.data$stroke = as.factor(rose.testing.data$stroke)
+rose.testing.data$hypertension = as.factor(rose.testing.data$hypertension)
+rose.testing.data$heart_disease = as.factor(rose.testing.data$heart_disease)
+
+training.data.ROSE = ROSE(stroke ~ ., data = rose.training.data, seed = 1)$data
+table(training.data.ROSE$stroke)
+```
+
+## Neural Network (not great for undersampling since neural network needs a lot of data)
+```{r}
+train.nn = data.frame(stroke = as.integer(training.data.ROSE$stroke), model.matrix(stroke ~ . -1, training.data.ROSE))
+test.nn = data.frame(stroke = as.integer(rose.testing.data$stroke), model.matrix(stroke ~ . -1, rose.testing.data))
+
+train.nn$stroke = ifelse(train.nn$stroke == 2,1,0)
+test.nn$stroke = ifelse(test.nn$stroke == 2, 1, 0)
+
+set.seed(123)
+model.nn = neuralnet(stroke ~ ., data = train.nn, hidden = 1, err.fct = "ce", linear.output = F)
+# plot(model.nn, rep = "best")
+
+probabilities = as.vector(predict(model.nn, test.nn))
+predicted.classes = ifelse(probabilities > 0.5, 1, 0)
+confusionMatrix(factor(predicted.classes), factor(test.nn$stroke), positive = '1')
+```
+
+## Logistic Regression
+```{r}
+logistic = glm(stroke ~ ., data = training.data.ROSE, family = 'binomial')
+nothing = glm(stroke ~ 1, data = training.data.ROSE, family = 'binomial')
+#summary(logistic)
+probs = predict(logistic, rose.testing.data, type = 'response')
+
+# to get the results, just apply the model you want, execute the probs for that model, and then scroll to the bottom of the cell and 
+# apply the confusion matrix 
+
+# Stepwise Selection
+stepwise = stepAIC(logistic, trace = FALSE)
+#summary(stepwise)
+probs = predict(stepwise, rose.testing.data, type = 'response')
+
+# Backward Selection
+backwards = step(logistic, trace=0)
+#summary(backwards)
+probs = predict(backwards, rose.testing.data, type = 'response')
+
+# Forward Selection
+forwards = step(nothing, scope=list(lower =formula(nothing),upper=formula(logistic)), direction="forward", trace = 0)
+#summary(forwards)
+probs = predict(forwards, rose.testing.data, type = 'response')
+
+predictions = ifelse(probs > 0.5, 1, 0)
+confusionMatrix(factor(predictions), rose.testing.data$stroke, positive = '1')
+```
+
+## Lasso Regression
+```{r}
+x.train = model.matrix(stroke ~ ., training.data.ROSE)[,-1]
+x.test = model.matrix(stroke ~.,rose.testing.data)[,-1]
+
+# what's the optimal lambda for the data?
+set.seed(123)
+cv = cv.glmnet(x.train, as.numeric(training.data.ROSE$stroke), alpha = 1)
+
+lasso = glmnet(x.train, training.data.ROSE$stroke, family = "binomial", alpha = 1, lambda = cv$lambda.min)
+#coef(lasso)
+
+probs.lasso = as.vector(predict(lasso, x.test, type = 'response'))
+predictions.lasso = ifelse(probs.lasso > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.lasso), as.factor(rose.testing.data$stroke), positive = '1')
+```
+
+## Ridge Regression
+```{r}
+set.seed(123)
+cv = cv.glmnet(x.train, as.numeric(training.data.ROSE$stroke), alpha = 0)
+
+ridge = glmnet(x.train, training.data.ROSE$stroke, family = "binomial", alpha = 0, lambda = cv$lambda.min)
+coef(ridge)
+
+probs.ridge = as.vector(predict(ridge, x.test, type = 'response'))
+predictions.ridge = ifelse(probs.ridge > 0.5, 1, 0)
+confusionMatrix(as.factor(predictions.ridge), as.factor(rose.testing.data$stroke), positive = '1')
+```
+
+## Elastic Net 
+```{r}
+set.seed(123)
+model = train(
+  stroke ~., data = training.data.ROSE, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 10
+)
+
+model$bestTune
+
+#x.test = model.matrix(stroke ~., both.test)[,-1]
+predictions = predict(model, rose.testing.data)
+confusionMatrix(predictions, as.factor(rose.testing.data$stroke), positive = '1')
+```
+
+## Random Forest
+```{r}
+set.seed(123)
+model = train(
+  stroke ~., data = training.data.ROSE, method = "rf",
+  trControl = trainControl("cv", number = 10),
+  importance = TRUE
+)
+
+# Best tuning parameter
+model$bestTune
+model$finalModel
+
+# Predictions and confusion matrix
+predictions = predict(model, rose.testing.data)
+confusionMatrix(as.factor(predictions), rose.testing.data$stroke, positive = '1')
+
+# variable importance plots
+varImpPlot(model$finalModel, type = 1)
+varImpPlot(model$finalModel, type = 2)
+```
